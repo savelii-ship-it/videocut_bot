@@ -290,6 +290,29 @@ async def main() -> None:
     cbs3 = dict(cb, id="cbs3", data="s_toggle_quick")
     await dp.feed_update(mock, Update.model_validate({"update_id": 24, "callback_query": cbs3}))
 
+    # 11. /cookies: сохранение и валидация кук YouTube
+    cookies_fixture = TMP / "cookies.txt"
+    cookies_fixture.write_text(
+        "# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t9999999999\tSID\ttest\n"
+    )
+    real_download = botmod.bot.download_file
+
+    async def dl_cookies(file_path, destination, **kw):
+        shutil.copy(cookies_fixture, destination)
+    botmod.bot.download_file = dl_cookies
+    await dp.feed_update(mock, upd(25, {
+        "text": "/cookies",
+        "entities": [{"type": "bot_command", "offset": 0, "length": 8}],
+    }))
+    await dp.feed_update(mock, upd(26, {
+        "document": {"file_id": "doc_cookies", "file_unique_id": "ud1",
+                     "file_name": "cookies.txt", "mime_type": "text/plain",
+                     "file_size": 100},
+    }))
+    assert botmod.cookies_path(CHAT).exists(), "cookies не сохранились"
+    print("✅ /cookies: файл сохранён и проверен")
+    botmod.bot.download_file = real_download
+
     print("\nE2E: ВСЕ СЦЕНАРИИ ПРОШЛИ ✅")
 
 

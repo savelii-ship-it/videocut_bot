@@ -67,6 +67,7 @@ class CutStates(StatesGroup):
     waiting_range = State()        # ручной ввод отрезка
     waiting_partlen = State()      # ручной ввод длины части
     waiting_banner = State()       # ждём картинку/видео-баннер
+    waiting_cookies = State()      # ждём cookies.txt для YouTube
     settings_len = State()         # своя длина части в настройках
 
 
@@ -207,7 +208,8 @@ async def cmd_start(message: Message) -> None:
         "4. Получи все части обратно\n\n"
         "По желанию: /banner — картинка или видео/GIF, которые встанут "
         "на всю ширину посередине каждой части. /delbanner — убрать.\n"
-        "/settings — длина части, баннер и ⚡ быстрый режим (только отрезок — и готово)."
+        "/settings — длина части, баннер и ⚡ быстрый режим (только отрезок — и готово).\n"
+        "Если YouTube ругается «подтвердите, что вы не бот» — /cookies."
     )
 
 
@@ -352,7 +354,51 @@ URL_RE = re.compile(r"https?://[^\s]+")
 MAX_URL_BYTES = 2 * 1024 * 1024 * 1024  # не тянем файлы больше 2 ГБ
 
 
-async def download_by_url(url: str, dest: Path) -> None:
+def cookies_path(user_id: int) -> Path:
+    return user_dir(user_id) / "cookies.txt"
+
+
+@dp.message(Command("cookies"))
+async def cmd_cookies(message: Message, state: FSMContext) -> None:
+    await state.set_state(CutStates.waiting_cookies)
+    await message.answer(
+        "YouTube иногда просит «подтвердите, что вы не бот» — лечится куками.\n\n"
+        "1. В Chrome поставь расширение <b>Get cookies.txt LOCALLY</b>\n"
+        "2. Зайди на youtube.com (залогиненным) и экспортируй cookies.txt\n"
+        "3. Пришли файл сюда\n\n"
+        "/delcookies — удалить, /cancel — отмена."
+    )
+
+
+@dp.message(Command("delcookies"))
+async def cmd_delcookies(message: Message) -> None:
+    p = cookies_path(message.from_user.id)
+    if p.exists():
+        p.unlink()
+        await message.answer("Cookies удалены 🗑")
+    else:
+        await message.answer("Cookies и не было.")
+
+
+@dp.message(CutStates.waiting_cookies, F.document)
+async def got_cookies(message: Message, state: FSMContext) -> None:
+    doc = message.document
+    if doc.file_size and doc.file_size > 1024 * 1024:
+        await message.answer("❌ Файл слишком большой для cookies.txt")
+        return
+    dest = cookies_path(message.from_user.id)
+    file = await bot.get_file(doc.file_id)
+    await bot.download_file(file.file_path, dest)
+    content = dest.read_text(errors="replace")
+    if "youtube.com" not in content and "google.com" not in content:
+        dest.unlink(missing_ok=True)
+        await message.answer("❌ В файле нет кук YouTube. Экспортируй с youtube.com и пришли ещё раз.")
+        return
+    await state.set_state(None)
+    await message.answer("Cookies сохранены ✅ Теперь кидай ссылку на YouTube.")
+
+
+async def download_by_url(url: str, dest: Path, cookies: Path | None = None) -> None:
     env = dict(os.environ)
     # deno нужен yt-dlp для JS-challenge YouTube
     env["PATH"] = f"{Path.home()}/.local/bin:" + env.get("PATH", "")
@@ -362,8 +408,10 @@ async def download_by_url(url: str, dest: Path) -> None:
         "-f", "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/b[ext=mp4]/b",
         "--merge-output-format", "mp4",
         "--no-progress", "--no-warnings",
-        "-o", str(dest), url,
     ]
+    if cookies and cookies.exists():
+        cmd += ["--cookies", str(cookies)]
+    cmd += ["-o", str(dest), url]
     proc = await asyncio.create_subprocess_exec(
         *cmd, env=env,
         stdout=asyncio.subprocess.PIPE,
@@ -372,6 +420,10 @@ async def download_by_url(url: str, dest: Path) -> None:
     out, _ = await proc.communicate()
     if proc.returncode != 0 or not dest.exists() or dest.stat().st_size == 0:
         tail = out.decode("utf-8", errors="replace")[-400:]
+        if "Sign in to confirm" in tail:
+            raise processing.ProcessingError(
+                "YouTube просит подтверждение «не бот». Пришли куки через /cookies — и скачаю."
+            )
         raise processing.ProcessingError(f"не удалось скачать по ссылке: {tail}")
 
 
@@ -385,7 +437,7 @@ async def got_url(message: Message, state: FSMContext) -> None:
     job_dir.mkdir(parents=True, exist_ok=True)
     dest = job_dir / "input.mp4"
     try:
-        await download_by_url(url, dest)
+        await download_by_url(url, dest, cookies=cookies_path(message.from_user.id))
     except processing.ProcessingError as e:
         shutil.rmtree(job_dir, ignore_errors=True)
         await status.edit_text(f"❌ {e}")
