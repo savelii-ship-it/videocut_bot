@@ -410,6 +410,15 @@ def cookies_path(user_id: int) -> Path:
     return user_dir(user_id) / "cookies.txt"
 
 
+def effective_cookies(user_id: int) -> Path | None:
+    """Куки пользователя, а если их нет — общие (uid 0, заливаются админом)."""
+    p = cookies_path(user_id)
+    if p.exists():
+        return p
+    shared = cookies_path(0)
+    return shared if shared.exists() else None
+
+
 def _json_cookies_to_netscape(text: str) -> str | None:
     """Конвертирует JSON-экспорт EditThisCookie в Netscape cookies.txt."""
     try:
@@ -567,7 +576,7 @@ async def got_url(message: Message, state: FSMContext) -> None:
     job_dir.mkdir(parents=True, exist_ok=True)
     dest = job_dir / "input.mp4"
     try:
-        await download_by_url(url, dest, cookies=cookies_path(message.from_user.id))
+        await download_by_url(url, dest, cookies=effective_cookies(message.from_user.id))
     except processing.ProcessingError as e:
         shutil.rmtree(job_dir, ignore_errors=True)
         await status.edit_text(f"❌ {e}")
