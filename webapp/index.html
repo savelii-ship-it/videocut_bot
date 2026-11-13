@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Нарезка видео</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  :root { --accent: #4f8ef7; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: var(--tg-theme-bg-color, #141414);
+    color: var(--tg-theme-text-color, #fff);
+    padding: 16px;
+  }
+  video { width: 100%; border-radius: 12px; background: #000; }
+  .row { margin-top: 16px; }
+  .times {
+    display: flex; justify-content: space-between;
+    font-variant-numeric: tabular-nums; font-size: 14px; opacity: .85;
+  }
+  .slider-wrap { position: relative; height: 32px; margin-top: 8px; }
+  input[type=range] {
+    position: absolute; width: 100%; height: 32px;
+    -webkit-appearance: none; appearance: none;
+    background: transparent; pointer-events: none;
+  }
+  input[type=range]::-webkit-slider-runnable-track { height: 4px; border-radius: 2px;
+    background: linear-gradient(to right, #333 var(--lo,0%), var(--accent) var(--lo,0%), var(--accent) var(--hi,100%), #333 var(--hi,100%)); }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none; pointer-events: auto;
+    width: 22px; height: 22px; margin-top: -9px; border-radius: 50%;
+    background: #fff; border: 2px solid var(--accent); cursor: pointer;
+  }
+  input[type=range]::-moz-range-track { height: 4px; background: #333; }
+  input[type=range]::-moz-range-thumb { pointer-events: auto; width: 20px; height: 20px;
+    border-radius: 50%; background: #fff; border: 2px solid var(--accent); }
+  label { font-size: 14px; opacity: .85; display: block; margin-bottom: 6px; }
+  select {
+    width: 100%; padding: 10px 12px; border-radius: 10px; font-size: 15px;
+    background: var(--tg-theme-secondary-bg-color, #232323);
+    color: var(--tg-theme-text-color, #fff); border: 1px solid #333;
+  }
+  .toggles { display: flex; gap: 10px; flex-wrap: wrap; }
+  .chip {
+    flex: 1; min-width: 130px; padding: 12px; border-radius: 10px; text-align: center;
+    background: var(--tg-theme-secondary-bg-color, #232323);
+    border: 1px solid #333; font-size: 14px; cursor: pointer; user-select: none;
+  }
+  .chip.on { border-color: var(--accent); background: rgba(79,142,247,.18); }
+  #go {
+    width: 100%; margin-top: 22px; padding: 14px; border: none; border-radius: 12px;
+    font-size: 16px; font-weight: 600; cursor: pointer;
+    background: var(--tg-theme-button-color, var(--accent));
+    color: var(--tg-theme-button-text-color, #fff);
+  }
+  #go:disabled { opacity: .4; }
+  .hint { font-size: 12px; opacity: .55; margin-top: 6px; }
+  #dur-line { margin-top: 8px; font-size: 13px; opacity: .7; text-align: center; }
+</style>
+</head>
+<body>
+
+<video id="v" controls playsinline preload="metadata"></video>
+
+<div class="row">
+  <div class="times"><span id="tStart">00:00</span><span id="tEnd">00:00</span></div>
+  <div class="slider-wrap" id="sliderWrap">
+    <input type="range" id="rStart" min="0" step="0.1" value="0">
+    <input type="range" id="rEnd" min="0" step="0.1" value="0">
+  </div>
+  <div id="dur-line"></div>
+  <div class="hint">Двигай ползунки — левый начало, правый конец отрезка</div>
+</div>
+
+<div class="row">
+  <label>Длина одной части</label>
+  <select id="partLen">
+    <option value="15">15 секунд</option>
+    <option value="30" selected>30 секунд</option>
+    <option value="60">60 секунд</option>
+    <option value="10">10 секунд</option>
+    <option value="45">45 секунд</option>
+    <option value="90">90 секунд</option>
+  </select>
+</div>
+
+<div class="row toggles">
+  <div class="chip" id="chipSmart">🧠 Умная нарезка<br><small>границы по смене сцен</small></div>
+  <div class="chip" id="chipBanner" style="display:none">🖼 Баннер<br><small>по центру на всю ширину</small></div>
+</div>
+
+<button id="go">✂️ Нарезать</button>
+
+<script>
+const tg = window.Telegram.WebApp;
+tg.ready();
+tg.expand();
+
+const params = new URLSearchParams(location.search);
+const token = params.get("token");
+const dur = parseFloat(params.get("dur") || "0");
+const hasBanner = params.get("banner") === "1";
+
+const v = document.getElementById("v");
+const rStart = document.getElementById("rStart");
+const rEnd = document.getElementById("rEnd");
+const tStart = document.getElementById("tStart");
+const tEnd = document.getElementById("tEnd");
+const durLine = document.getElementById("dur-line");
+const chipSmart = document.getElementById("chipSmart");
+const chipBanner = document.getElementById("chipBanner");
+const go = document.getElementById("go");
+
+if (!token) {
+  document.body.innerHTML = "<p style='margin-top:40px;text-align:center'>❌ Нет токена видео. Открой мини-апп через кнопку бота.</p>";
+  throw new Error("no token");
+}
+
+v.src = "/video/" + token;
+
+let duration = dur > 0 ? dur : 0;
+v.addEventListener("loadedmetadata", () => {
+  if (!duration && isFinite(v.duration)) duration = v.duration;
+  initSliders();
+});
+
+function fmt(s) {
+  s = Math.max(0, s);
+  const m = Math.floor(s / 60), sec = s - m * 60;
+  return String(m).padStart(2, "0") + ":" + sec.toFixed(1).padStart(4, "0");
+}
+
+function initSliders() {
+  rStart.max = rEnd.max = duration;
+  rStart.value = 0;
+  rEnd.value = duration;
+  update();
+}
+
+function update() {
+  let a = parseFloat(rStart.value), b = parseFloat(rEnd.value);
+  if (a > b) [a, b] = [b, a];
+  tStart.textContent = fmt(a);
+  tEnd.textContent = fmt(b);
+  const partLen = parseFloat(document.getElementById("partLen").value);
+  const n = Math.max(1, Math.ceil((b - a) / partLen));
+  durLine.textContent = "Отрезок " + fmt(b - a) + " → " + n + " ч.";
+  const lo = (a / duration * 100) + "%", hi = (b / duration * 100) + "%";
+  rStart.style.setProperty("--lo", lo); rStart.style.setProperty("--hi", hi);
+  rEnd.style.setProperty("--lo", lo); rEnd.style.setProperty("--hi", hi);
+}
+
+rStart.addEventListener("input", () => { v.currentTime = parseFloat(rStart.value); update(); });
+rEnd.addEventListener("input", () => { v.currentTime = parseFloat(rEnd.value); update(); });
+document.getElementById("partLen").addEventListener("change", update);
+
+let smart = false, banner = false;
+chipSmart.addEventListener("click", () => { smart = !smart; chipSmart.classList.toggle("on", smart); });
+if (hasBanner) {
+  chipBanner.style.display = "";
+  chipBanner.addEventListener("click", () => { banner = !banner; chipBanner.classList.toggle("on", banner); });
+}
+
+go.addEventListener("click", () => {
+  let a = parseFloat(rStart.value), b = parseFloat(rEnd.value);
+  if (a > b) [a, b] = [b, a];
+  if (b - a < 0.5) { tg.showAlert("Отрезок слишком короткий"); return; }
+  const payload = {
+    start: a, end: b,
+    part_len: parseFloat(document.getElementById("partLen").value),
+    smart: smart, banner: banner,
+  };
+  go.disabled = true;
+  tg.sendData(JSON.stringify(payload));
+  setTimeout(() => tg.close(), 400);
+});
+</script>
+</body>
+</html>

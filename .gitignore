@@ -1,0 +1,7 @@
+.env
+data/
+demo/
+*.log
+cloudflared
+__pycache__/
+.venv/
