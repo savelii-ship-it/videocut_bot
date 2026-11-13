@@ -238,8 +238,14 @@ async def main() -> None:
     assert "SendMessage" in new and "SendVideo" not in new
     print("✅ мусорный ввод → вежливая ошибка, падений нет")
 
+    # сбрасываем состояние ручного ввода после сценария 7
+    await dp.feed_update(mock, upd(150, {
+        "text": "/cancel",
+        "entities": [{"type": "bot_command", "offset": 0, "length": 7}],
+    }))
+
     # 8. Ссылка на видео (скачивание мокаем, остальное — по-настоящему)
-    async def fake_download(url, dest):
+    async def fake_download(url, dest, cookies=None):
         shutil.copy(SRC, dest)
     botmod.download_by_url = fake_download
     before = len(mock.requests)
@@ -250,7 +256,7 @@ async def main() -> None:
     print("✅ ссылка на видео → скачано и предложена нарезка")
 
     # 9. Битая ссылка → понятная ошибка
-    async def fail_download(url, dest):
+    async def fail_download(url, dest, cookies=None):
         raise botmod.processing.ProcessingError("не удалось скачать по ссылке: 403")
     botmod.download_by_url = fail_download
     before = len(mock.requests)

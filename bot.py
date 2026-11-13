@@ -23,7 +23,7 @@ from aiohttp import web
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import Command, CommandStart, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -328,14 +328,14 @@ async def _offer_cut(message: Message, state: FSMContext, src: Path) -> None:
         await message.answer(text, reply_markup=kb)
 
 
-@dp.message(F.video)
+@dp.message(StateFilter(None), F.video)
 async def got_video(message: Message, state: FSMContext) -> None:
     src = await _save_video(message, message.video.file_id, message.video.file_size)
     if src:
         await _offer_cut(message, state, src)
 
 
-@dp.message(F.document)
+@dp.message(StateFilter(None), F.document)
 async def got_document(message: Message, state: FSMContext) -> None:
     doc = message.document
     if not (doc.mime_type or "").startswith("video/"):
@@ -427,7 +427,7 @@ async def download_by_url(url: str, dest: Path, cookies: Path | None = None) -> 
         raise processing.ProcessingError(f"не удалось скачать по ссылке: {tail}")
 
 
-@dp.message(F.text.regexp(URL_RE))
+@dp.message(StateFilter(None), F.text.regexp(URL_RE))
 async def got_url(message: Message, state: FSMContext) -> None:
     url = URL_RE.search(message.text).group(0)
     status = await message.answer("⬇️ Скачиваю видео по ссылке… (YouTube может качать медленно)")
