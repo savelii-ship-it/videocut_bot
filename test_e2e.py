@@ -353,6 +353,27 @@ async def main() -> None:
     }))
     botmod.cookies_path(CHAT).unlink(missing_ok=True)
 
+    # 14. Репликация между инстансами: /internal/push + /internal/delete
+    from aiohttp.test_utils import TestClient, TestServer
+    os.environ["INTERNAL_SECRET"] = "testsecret"
+    async with TestClient(TestServer(botmod.server.create_app())) as cli:
+        bad = await cli.post("/internal/push",
+                             params={"uid": str(CHAT), "name": "sync_probe.txt"}, data=b"x")
+        assert bad.status == 403, f"без секрета не 403: {bad.status}"
+        ok = await cli.post("/internal/push",
+                            params={"uid": str(CHAT), "name": "sync_probe.txt"},
+                            data=b"hello-replica",
+                            headers={"X-Internal-Secret": "testsecret"})
+        assert ok.status == 200
+        assert (botmod.user_dir(CHAT) / "sync_probe.txt").read_text() == "hello-replica"
+        dele = await cli.post("/internal/delete",
+                              params={"uid": str(CHAT), "pattern": "sync_probe.*"},
+                              headers={"X-Internal-Secret": "testsecret"})
+        assert dele.status == 200
+        assert not (botmod.user_dir(CHAT) / "sync_probe.txt").exists()
+    del os.environ["INTERNAL_SECRET"]
+    print("✅ /internal: push/delete между инстансами работают, без секрета 403")
+
     print("\nE2E: ВСЕ СЦЕНАРИИ ПРОШЛИ ✅")
 
 

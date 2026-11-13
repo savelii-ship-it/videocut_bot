@@ -19,6 +19,7 @@ import sys
 import uuid
 from pathlib import Path
 
+import aiohttp
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
@@ -53,6 +54,10 @@ HTTP_PORT = int(os.getenv("HTTP_PORT") or os.getenv("PORT", "8080"))
 DATA_DIR = Path(os.getenv("DATA_DIR", "data")).resolve()
 # Кросс-пинг резервного инстанса: бесплатные хостинги не усыпляют друг друга
 PING_URLS = [u.strip() for u in os.getenv("PING_URLS", "").split(",") if u.strip()]
+# Резервный инстанс polling'ит параллельно — сообщения одного юзера могут
+# попадать на разные машины, поэтому пользовательские файлы реплицируем.
+PEER_URL = os.getenv("PEER_URL", "").rstrip("/")
+INTERNAL_SECRET = os.getenv("INTERNAL_SECRET", "")
 MAX_TG_BYTES = 49 * 1024 * 1024        # лимит отправки ботом ~50 МБ
 MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024  # лимит скачивания через Bot API
 
@@ -61,6 +66,48 @@ log = logging.getLogger("videocut")
 
 bot = Bot(BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher(storage=MemoryStorage())
+
+
+# ---------------------------------------------------------------------------
+# Репликация файлов на резервный инстанс (fire-and-forget)
+# ---------------------------------------------------------------------------
+
+async def _peer_request(endpoint: str, **params) -> None:
+    if not (PEER_URL and INTERNAL_SECRET):
+        return
+    data = params.pop("data", None)
+    try:
+        async with aiohttp.ClientSession(
+            headers={"X-Internal-Secret": INTERNAL_SECRET},
+            timeout=aiohttp.ClientTimeout(total=30),
+        ) as s:
+            await s.post(f"{PEER_URL}/internal/{endpoint}", params=params, data=data)
+    except Exception as e:
+        log.warning("синк с резервным инстансом не удался (%s): %s", endpoint, e)
+
+
+def _sync_push(user_id: int, path: Path) -> None:
+    """Отправить файл на резервный инстанс (если настроен)."""
+    if not (PEER_URL and INTERNAL_SECRET):
+        return
+    try:
+        asyncio.get_running_loop().create_task(
+            _peer_request("push", uid=str(user_id), name=path.name, data=path.read_bytes())
+        )
+    except RuntimeError:
+        pass
+
+
+def _sync_delete(user_id: int, pattern: str) -> None:
+    """Удалить файлы по паттерну на резервном инстансе."""
+    if not (PEER_URL and INTERNAL_SECRET):
+        return
+    try:
+        asyncio.get_running_loop().create_task(
+            _peer_request("delete", uid=str(user_id), pattern=pattern)
+        )
+    except RuntimeError:
+        pass
 
 
 class CutStates(StatesGroup):
@@ -93,7 +140,9 @@ def load_settings(user_id: int) -> dict:
 
 
 def save_settings(user_id: int, settings: dict) -> None:
-    settings_path(user_id).write_text(json.dumps(settings, ensure_ascii=False))
+    p = settings_path(user_id)
+    p.write_text(json.dumps(settings, ensure_ascii=False))
+    _sync_push(user_id, p)
 
 
 def _settings_text(s: dict) -> str:
@@ -227,6 +276,7 @@ async def cmd_delbanner(message: Message) -> None:
     p = banner_path(message.from_user.id)
     if p:
         p.unlink()
+        _sync_delete(message.from_user.id, "banner.*")
         await message.answer("Баннер удалён 🗑")
     else:
         await message.answer("Баннера и не было.")
@@ -262,9 +312,11 @@ async def got_banner(message: Message, state: FSMContext) -> None:
     old = banner_path(message.from_user.id)
     if old:
         old.unlink()
+    _sync_delete(message.from_user.id, "banner.*")
     dest = user_dir(message.from_user.id) / f"banner{ext.lower()}"
     file = await bot.get_file(file_id)
     await bot.download_file(file.file_path, dest)
+    _sync_push(message.from_user.id, dest)
     # set_state(None), а не clear(): не стираем данные о загруженном видео
     await state.set_state(None)
     kind = "Видео-баннер" if dest.suffix == ".mp4" else "Баннер"
@@ -389,7 +441,9 @@ def save_cookies(user_id: int, raw: str) -> bool:
     netscape = _json_cookies_to_netscape(raw) if raw.startswith("[") else raw
     if not netscape or ("youtube.com" not in netscape and "google.com" not in netscape):
         return False
-    cookies_path(user_id).write_text(netscape)
+    p = cookies_path(user_id)
+    p.write_text(netscape)
+    _sync_push(user_id, p)
     return True
 
 
@@ -414,6 +468,7 @@ async def cmd_delcookies(message: Message) -> None:
     p = cookies_path(message.from_user.id)
     if p.exists():
         p.unlink()
+        _sync_delete(message.from_user.id, "cookies.txt")
         await message.answer("Cookies удалены 🗑")
     else:
         await message.answer("Cookies и не было.")
