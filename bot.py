@@ -51,6 +51,8 @@ WEBAPP_URL = os.getenv("WEBAPP_URL", "").rstrip("/")  # https-URL сервера
 # Render и подобные отдают порт через PORT; локально — HTTP_PORT или 8080
 HTTP_PORT = int(os.getenv("HTTP_PORT") or os.getenv("PORT", "8080"))
 DATA_DIR = Path(os.getenv("DATA_DIR", "data")).resolve()
+# Кросс-пинг резервного инстанса: бесплатные хостинги не усыпляют друг друга
+PING_URLS = [u.strip() for u in os.getenv("PING_URLS", "").split(",") if u.strip()]
 MAX_TG_BYTES = 49 * 1024 * 1024        # лимит отправки ботом ~50 МБ
 MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024  # лимит скачивания через Bot API
 
@@ -626,6 +628,21 @@ async def _run_job(message: Message, state: FSMContext) -> None:
 # Точка входа: бот (polling) + HTTP-сервер мини-аппа в одном процессе
 # ---------------------------------------------------------------------------
 
+async def keepalive_loop() -> None:
+    """Пингуем резервный инстанс раз в 4 мин — бесплатные хостинги не засыпают."""
+    import aiohttp as _ah
+
+    async with _ah.ClientSession(timeout=_ah.ClientTimeout(total=15)) as s:
+        while True:
+            for u in PING_URLS:
+                try:
+                    async with s.get(u) as r:
+                        log.debug("keepalive %s -> %s", u, r.status)
+                except Exception as e:
+                    log.warning("keepalive %s упал: %s", u, e)
+            await asyncio.sleep(240)
+
+
 async def main() -> None:
     runner = None
     if WEBAPP_URL:
@@ -638,9 +655,16 @@ async def main() -> None:
     else:
         log.warning("WEBAPP_URL не задан — мини-апп отключён, только ручной ввод.")
 
+    keepalive = None
+    if PING_URLS:
+        keepalive = asyncio.create_task(keepalive_loop())
+        log.info("Keepalive пинги: %s", ", ".join(PING_URLS))
+
     try:
         await dp.start_polling(bot, allowed_updates=["message", "callback_query"])
     finally:
+        if keepalive:
+            keepalive.cancel()
         if runner:
             await runner.cleanup()
 
