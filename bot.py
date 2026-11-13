@@ -48,7 +48,8 @@ load_dotenv()
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 WEBAPP_URL = os.getenv("WEBAPP_URL", "").rstrip("/")  # https-URL сервера мини-аппа
-HTTP_PORT = int(os.getenv("HTTP_PORT", "8080"))
+# Render и подобные отдают порт через PORT; локально — HTTP_PORT или 8080
+HTTP_PORT = int(os.getenv("HTTP_PORT") or os.getenv("PORT", "8080"))
 DATA_DIR = Path(os.getenv("DATA_DIR", "data")).resolve()
 MAX_TG_BYTES = 49 * 1024 * 1024        # лимит отправки ботом ~50 МБ
 MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024  # лимит скачивания через Bot API
