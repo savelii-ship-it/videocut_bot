@@ -449,33 +449,57 @@ async def got_cookies_text(message: Message, state: FSMContext) -> None:
     await message.answer("Cookies сохранены ✅ Теперь кидай ссылку на YouTube.")
 
 
+# YouTube по-разному полicing'ит клиентов: если дефолтный набор не пускает
+# (датацентровые IP), пробуем другие player_client по очереди.
+PLAYER_CLIENT_ATTEMPTS: list[str | None] = [
+    None,           # дефолт yt-dlp
+    "web_safari",
+    "mweb",
+    "tv",
+    "web_embedded",
+    "android",
+]
+
+
 async def download_by_url(url: str, dest: Path, cookies: Path | None = None) -> None:
     env = dict(os.environ)
     # deno нужен yt-dlp для JS-challenge YouTube
     env["PATH"] = f"{Path.home()}/.local/bin:" + env.get("PATH", "")
-    cmd = [
+    base = [
         sys.executable, "-m", "yt_dlp", "--no-playlist",
         "--ffmpeg-location", str(Path(processing.FFMPEG).parent),
         "-f", "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/b[ext=mp4]/b",
         "--merge-output-format", "mp4",
-        "--no-progress", "--no-warnings",
+        "--no-progress",
     ]
     if cookies and cookies.exists():
-        cmd += ["--cookies", str(cookies)]
-    cmd += ["-o", str(dest), url]
-    proc = await asyncio.create_subprocess_exec(
-        *cmd, env=env,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
-    )
-    out, _ = await proc.communicate()
-    if proc.returncode != 0 or not dest.exists() or dest.stat().st_size == 0:
-        tail = out.decode("utf-8", errors="replace")[-400:]
-        if "Sign in to confirm" in tail:
-            raise processing.ProcessingError(
-                "YouTube просит подтверждение «не бот». Пришли куки через /cookies — и скачаю."
-            )
-        raise processing.ProcessingError(f"не удалось скачать по ссылке: {tail}")
+        base += ["--cookies", str(cookies)]
+
+    outputs: list[str] = []
+    for client in PLAYER_CLIENT_ATTEMPTS:
+        cmd = list(base)
+        if client:
+            cmd += ["--extractor-args", f"youtube:player_client={client}"]
+        cmd += ["-o", str(dest), url]
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, env=env,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+        )
+        out, _ = await proc.communicate()
+        text = out.decode("utf-8", errors="replace")
+        if proc.returncode == 0 and dest.exists() and dest.stat().st_size > 0:
+            return
+        outputs.append(text)
+        dest.unlink(missing_ok=True)
+        log.warning("yt-dlp попытка (client=%s) не удалась: %s", client, text[-300:])
+
+    full = "\n".join(outputs)
+    if "Sign in to confirm" in full:
+        raise processing.ProcessingError(
+            "YouTube просит подтверждение «не бот». Пришли свежие куки через /cookies — и скачаю."
+        )
+    raise processing.ProcessingError(f"не удалось скачать по ссылке: {outputs[-1][-500:]}")
 
 
 @dp.message(StateFilter(None), F.text.regexp(URL_RE))
