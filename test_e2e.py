@@ -319,6 +319,40 @@ async def main() -> None:
     print("✅ /cookies: файл сохранён и проверен")
     botmod.bot.download_file = real_download
 
+    # 12. /cookies: JSON из EditThisCookie → конвертация в Netscape
+    await dp.feed_update(mock, upd(27, {
+        "text": "/cookies",
+        "entities": [{"type": "bot_command", "offset": 0, "length": 8}],
+    }))
+    editthis_json = json.dumps([{
+        "domain": ".youtube.com", "path": "/", "secure": True,
+        "expirationDate": 9999999999, "name": "SID", "value": "x",
+    }])
+    before = len(mock.requests)
+    await dp.feed_update(mock, upd(28, {"text": editthis_json}))
+    new = sent_methods(mock)[before:]
+    saved = botmod.cookies_path(CHAT).read_text()
+    assert saved.startswith("# Netscape"), f"JSON не сконвертировался: {saved[:80]}"
+    assert ".youtube.com\tTRUE\t/\tTRUE\t9999999999\tSID\tx" in saved
+    assert "SendMessage" in new and "Cookies сохранены" in str(mock.requests[before:])
+    print("✅ /cookies: EditThisCookie JSON сконвертирован в Netscape")
+
+    # 13. /cookies: мусор → отказ, файл не перезаписан
+    await dp.feed_update(mock, upd(29, {
+        "text": "/cookies",
+        "entities": [{"type": "bot_command", "offset": 0, "length": 8}],
+    }))
+    await dp.feed_update(mock, upd(30, {"text": "просто какой-то текст"}))
+    assert botmod.cookies_path(CHAT).read_text() == saved, "мусор перезаписал cookies"
+    print("✅ /cookies: мусор отклонён, старые cookies на месте")
+
+    # отменяем состояние, чистим cookies за собой
+    await dp.feed_update(mock, upd(31, {
+        "text": "/cancel",
+        "entities": [{"type": "bot_command", "offset": 0, "length": 7}],
+    }))
+    botmod.cookies_path(CHAT).unlink(missing_ok=True)
+
     print("\nE2E: ВСЕ СЦЕНАРИИ ПРОШЛИ ✅")
 
 

@@ -358,14 +358,53 @@ def cookies_path(user_id: int) -> Path:
     return user_dir(user_id) / "cookies.txt"
 
 
+def _json_cookies_to_netscape(text: str) -> str | None:
+    """Конвертирует JSON-экспорт EditThisCookie в Netscape cookies.txt."""
+    try:
+        data = json.loads(text)
+        if not isinstance(data, list) or not data:
+            return None
+        lines = ["# Netscape HTTP Cookie File"]
+        for c in data:
+            domain = c.get("domain", "")
+            if not domain or "name" not in c:
+                return None
+            lines.append("\t".join([
+                domain,
+                "TRUE" if domain.startswith(".") else "FALSE",
+                c.get("path", "/") or "/",
+                "TRUE" if c.get("secure") else "FALSE",
+                str(int(c.get("expirationDate") or 0)),
+                str(c["name"]),
+                str(c.get("value", "")),
+            ]))
+        return "\n".join(lines) + "\n"
+    except (json.JSONDecodeError, TypeError, ValueError, AttributeError):
+        return None
+
+
+def save_cookies(user_id: int, raw: str) -> bool:
+    """Сохраняет куки в любом формате (Netscape или EditThisCookie JSON)."""
+    raw = raw.strip()
+    netscape = _json_cookies_to_netscape(raw) if raw.startswith("[") else raw
+    if not netscape or ("youtube.com" not in netscape and "google.com" not in netscape):
+        return False
+    cookies_path(user_id).write_text(netscape)
+    return True
+
+
 @dp.message(Command("cookies"))
 async def cmd_cookies(message: Message, state: FSMContext) -> None:
     await state.set_state(CutStates.waiting_cookies)
     await message.answer(
         "YouTube иногда просит «подтвердите, что вы не бот» — лечится куками.\n\n"
-        "1. В Chrome поставь расширение <b>Get cookies.txt LOCALLY</b>\n"
-        "2. Зайди на youtube.com (залогиненным) и экспортируй cookies.txt\n"
-        "3. Пришли файл сюда\n\n"
+        "Вариант А — <b>EditThisCookie</b> (уже стоит):\n"
+        "1. Открой youtube.com (залогиненным)\n"
+        "2. Кликни иконку расширения → <b>Export</b> (JSON скопируется в буфер)\n"
+        "3. Вставь в Блокнот, сохрани как cookies.txt и пришли файлом сюда\n"
+        "   (бот сам сконвертирует)\n\n"
+        "Вариант Б — <b>Get cookies.txt LOCALLY</b>:\n"
+        "экспортируй и пришли cookies.txt как есть.\n\n"
         "/delcookies — удалить, /cancel — отмена."
     )
 
@@ -386,13 +425,25 @@ async def got_cookies(message: Message, state: FSMContext) -> None:
     if doc.file_size and doc.file_size > 1024 * 1024:
         await message.answer("❌ Файл слишком большой для cookies.txt")
         return
-    dest = cookies_path(message.from_user.id)
+    tmp = user_dir(message.from_user.id) / "cookies_upload.tmp"
     file = await bot.get_file(doc.file_id)
-    await bot.download_file(file.file_path, dest)
-    content = dest.read_text(errors="replace")
-    if "youtube.com" not in content and "google.com" not in content:
-        dest.unlink(missing_ok=True)
-        await message.answer("❌ В файле нет кук YouTube. Экспортируй с youtube.com и пришли ещё раз.")
+    await bot.download_file(file.file_path, tmp)
+    raw = tmp.read_text(errors="replace")
+    tmp.unlink(missing_ok=True)
+    if not save_cookies(message.from_user.id, raw):
+        await message.answer(
+            "❌ Не похоже на куки YouTube. Экспортируй с youtube.com "
+            "(EditThisCookie → Export или Get cookies.txt) и пришли ещё раз."
+        )
+        return
+    await state.set_state(None)
+    await message.answer("Cookies сохранены ✅ Теперь кидай ссылку на YouTube.")
+
+
+@dp.message(CutStates.waiting_cookies, F.text)
+async def got_cookies_text(message: Message, state: FSMContext) -> None:
+    if not save_cookies(message.from_user.id, message.text):
+        await message.answer("❌ Не похоже на куки YouTube. Попробуй ещё раз или /cancel.")
         return
     await state.set_state(None)
     await message.answer("Cookies сохранены ✅ Теперь кидай ссылку на YouTube.")
