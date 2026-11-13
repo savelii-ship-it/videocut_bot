@@ -1,64 +1,51 @@
-# ☁️ Перенос бота в облако (бесплатно, без привязки к твоему Mac)
+# ☁️ Текущая облачная схема (развёрнуто 13.11.2026)
 
-Архитектура failover: **две копии бота на двух независимых хостингах**.
-Telegram отдаёт апдейты только одному поллеру — второй молча ждёт.
-Упал первый → второй подхватывает сам, без вмешательства. У каждого
-свой публичный адрес мини-аппа (зашит в его `WEBAPP_URL`).
+Бот живёт в облаке, Mac не нужен. Два независимых инстанса на двух
+аккаунтах Render (бесплатный тариф, без карты):
 
-Что понадобится от тебя: одна регистрация (почта или GitHub). Карта не нужна.
+| Инстанс | URL | Аккаунт Render | Регион |
+|---|---|---|---|
+| `videocut-bot-1` | https://videocut-bot-1.onrender.com | savelii.turenko@gmail.com | Frankfurt |
+| `videocut-bot-2` | https://videocut-bot-2.onrender.com | saveliyturenko@gmail.com | Oregon |
 
----
+Код: https://github.com/savelii-ship-it/videocut_bot (публичный, секретов нет —
+всё в env-переменных Render).
 
-## Хостинг 1 и 2: Hugging Face Spaces (бесплатно, 2 vCPU / 16 ГБ на каждый)
+## Как работает failover
 
-Повтори шаги дважды — для `videocut-bot-1` и `videocut-bot-2`.
+Оба инстанса крутят polling одновременно. Telegram отдаёт апдейты только
+одному (обычно первому) — второй получает `TelegramConflictError` и молча
+повторяет попытки каждые ~5 с. Упал/уснул первый → второй подхватывает
+автоматически. Лимит 750 ч/мес на аккаунт Render покрывает ровно один
+инстанс 24/7 — поэтому два аккаунта.
 
-1. Зарегистрируйся на https://huggingface.co (кнопка Sign Up, можно через GitHub).
-2. https://huggingface.co/new-space →
-   - Name: `videocut-bot-1`
-   - SDK: **Docker** → шаблон **Blank**
-   - Hardware: **CPU basic (free)**
-3. В созданном Space открой вкладку **Files** → **Add file** → **Upload files**
-   и залей всё содержимое папки `videocut_bot` (Dockerfile, bot.py, processing.py,
-   server.py, webapp/, requirements.txt).
-4. Вкладка **Settings** → **Variables and secrets** → **New secret**:
-   - `BOT_TOKEN` = токен от @BotFather
-   - `WEBAPP_URL` = `https://ТВОЙ_ЛОГИН-videocut-bot-1.hf.space`
-     (именно так, через дефис; адрес можно скопировать из кнопки «⋯ → Embed this Space»)
-   - `HTTP_PORT` = `7860`
-5. Space сам соберёт образ и запустит бота (вкладка **Logs** — там будет
-   `Run polling for bot @ClipHubot`).
+## Как не засыпают (без UptimeRobot)
 
-Проверка: открой `https://ТВОЙ_ЛОГИН-videocut-bot-1.hf.space/health` → `ok`.
+Каждый инстанс раз в 4 минуты пингует `/health` другого (env `PING_URLS`).
+Взаимные запросы не дают бесплатным инстансам уснуть после 15 минут простоя.
 
-## Чтобы Spaces не засыпали (бесплатный UptimeRobot)
+## Управление через API (Render)
 
-Бесплатный Space засыпает после ~48 ч без HTTP-запросов. Будильник:
+- Аккаунт 1: ключ `videocut-deploy` (dashboard → Account Settings → API Keys)
+- Аккаунт 2: ключ `videocut-deploy-2`
+- Редеплой: `POST /v1/services/{id}/deploys` (autoDeploy выключен — после
+  пуша на GitHub деплой запускается вручную через API)
+- env: `PUT /v1/services/{id}/env-vars`
 
-1. https://uptimerobot.com → Sign Up (бесплатно, без карты).
-2. **Add New Monitor** → HTTP(s), URL: `https://ТВОЙ_ЛОГИН-videocut-bot-1.hf.space/health`,
-   интервал 5 мин.
-3. То же для второго Space.
-
-Бонус: UptimeRobot пришлёт письмо, если оба хостинга лягут одновременно.
-
----
-
-## Альтернатива: свой/любой VPS (если появится)
+## Обновление кода
 
 ```bash
-docker build -t videocut_bot .
-docker run -d --restart always \
-  -e BOT_TOKEN=... -e WEBAPP_URL=https://твой-домен -e HTTP_PORT=8080 \
-  -p 8080:8080 --name videocut videocut_bot
+git push origin main        # код на GitHub
+# затем по одному POST на /deploys каждого сервиса (см. выше)
 ```
 
----
+## Локальный запуск (разработка)
 
-## Замечания
+```bash
+pip install -r requirements.txt
+cp .env.example .env   # вписать BOT_TOKEN; WEBAPP_URL — через туннель
+python bot.py
+```
 
-- Данные (баннеры, настройки) живут в контейнере и сбрасываются при пересборке
-  Space — на бесплатном тарифе это нормально, бот переспросит баннер.
-- Оба Space качают ffmpeg/deno при сборке образа — в рантайме ничего не догружается.
-- Лимиты: обработка видео CPU-bound; 2 vCPU хватает на нарезку 720p/1080p в
-  реальном темпе (проверено: 4 части по 15 с ≈ 10–15 с).
+Проверки: `python test_pipeline.py` (ffmpeg-пайплайн),
+`python test_e2e.py` (13 сценариев логики бота).
