@@ -4,4 +4,5 @@ python-dotenv>=1.0
 static-ffmpeg>=2.5
 yt-dlp>=2026.10
 yt-dlp-ejs>=0.3
+bgutil-ytdlp-pot-provider>=2.0.2
 # deno (JS-рантайм для YouTube challenge): бинарник в ~/.local/bin
