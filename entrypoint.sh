@@ -1,9 +1,4 @@
 #!/bin/sh
-# Стартуем POT-провайдер (генератор proof-of-origin токенов для YouTube)
-# и самого бота в одном контейнере. Рецепт запуска — из официального
-# deno-образа bgutil-ytdlp-pot-provider.
-deno run --allow-env --allow-net \
-  --allow-ffi=/opt/pot/server/node_modules \
-  --allow-read=/opt/pot/server/node_modules \
-  /opt/pot/server/src/main.ts &
+# POT-провайдер работает в script-режиме: yt-dlp сам вызывает его
+# на время генерации токена (постоянный сервер съедал лимит 512 МБ → OOM).
 cd /app && exec python bot.py

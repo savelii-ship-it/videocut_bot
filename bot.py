@@ -536,6 +536,10 @@ async def download_by_url(url: str, dest: Path, cookies: Path | None = None) -> 
         "-f", "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/b[ext=mp4]/b",
         "--merge-output-format", "mp4",
         "--no-progress",
+        # POT-токены в script-режиме: deno вызывается только на время
+        # генерации токена, а не висит постоянно (экономим RAM)
+        "--extractor-args",
+        "youtubepot-bgutilscript:server_home=/opt/pot/server",
     ]
     if cookies and cookies.exists():
         base += ["--cookies", str(cookies)]
@@ -936,21 +940,6 @@ async def keepalive_loop() -> None:
             await asyncio.sleep(240)
 
 
-async def pot_health() -> None:
-    """Ждём поднятия локального POT-провайдера и логируем итог."""
-    for _ in range(30):
-        try:
-            async with aiohttp.ClientSession(
-                timeout=aiohttp.ClientTimeout(total=5)
-            ) as s:
-                async with s.get("http://127.0.0.1:4416/ping") as r:
-                    log.info("POT-провайдер поднялся: HTTP %s", r.status)
-                    return
-        except Exception:
-            await asyncio.sleep(2)
-    log.warning("POT-провайдер НЕ отвечает на 127.0.0.1:4416 — YouTube будет резать")
-
-
 async def main() -> None:
     app = server.create_app()
     webhook_mode = bool(TG_SECRET and WEBAPP_URL)
@@ -971,7 +960,6 @@ async def main() -> None:
     if PING_URLS:
         keepalive = asyncio.create_task(keepalive_loop())
         log.info("Keepalive пинги: %s", ", ".join(PING_URLS))
-    asyncio.create_task(pot_health())
 
     try:
         if webhook_mode:
