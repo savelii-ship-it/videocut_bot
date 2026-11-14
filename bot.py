@@ -558,9 +558,9 @@ async def download_by_url(url: str, dest: Path, cookies: Path | None = None) -> 
         outputs.append(text)
         dest.unlink(missing_ok=True)
         pot_lines = [l.strip()[:160] for l in text.splitlines()
-                     if "pot" in l.lower()][:4]
+                     if "bgutil:http" in l or "Generating" in l or "PO Token Providers" in l][:6]
         log.warning("yt-dlp попытка (client=%s) не удалась. POT: %s | хвост: %s",
-                    client, " / ".join(pot_lines) or "—", text[-400:])
+                    client, " / ".join(pot_lines) or "—", text[-1000:])
 
     full = "\n".join(outputs)
     if "Sign in to confirm" in full:
