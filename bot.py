@@ -531,7 +531,7 @@ async def download_by_url(url: str, dest: Path, cookies: Path | None = None) -> 
     # deno нужен yt-dlp для JS-challenge YouTube
     env["PATH"] = f"{Path.home()}/.local/bin:" + env.get("PATH", "")
     base = [
-        sys.executable, "-m", "yt_dlp", "--no-playlist",
+        sys.executable, "-m", "yt_dlp", "--no-playlist", "-v",
         "--ffmpeg-location", str(Path(processing.FFMPEG).parent),
         "-f", "bv*[height<=1080][ext=mp4]+ba[ext=m4a]/b[ext=mp4]/b",
         "--merge-output-format", "mp4",
@@ -557,9 +557,10 @@ async def download_by_url(url: str, dest: Path, cookies: Path | None = None) -> 
             return
         outputs.append(text)
         dest.unlink(missing_ok=True)
-        pot = "pot" if ("[pot" in text or "PO Token" in text) else "no-pot"
-        log.warning("yt-dlp попытка (client=%s, %s) не удалась: %s",
-                    client, pot, text[-600:])
+        pot_lines = [l.strip()[:160] for l in text.splitlines()
+                     if "pot" in l.lower()][:4]
+        log.warning("yt-dlp попытка (client=%s) не удалась. POT: %s | хвост: %s",
+                    client, " / ".join(pot_lines) or "—", text[-400:])
 
     full = "\n".join(outputs)
     if "Sign in to confirm" in full:
@@ -837,7 +838,9 @@ async def telegram_webhook(request: web.Request) -> web.Response:
     except Exception:
         raise web.HTTPBadRequest()
     update = Update.model_validate(data, context={"bot": bot})
-    await dp.feed_update(bot, update)
+    # ACK сразу: обработка может идти минуты (скачивание), а Telegram
+    # иначе шлёт тот же апдейт повторно
+    asyncio.get_running_loop().create_task(dp.feed_update(bot, update))
     return web.Response(text="ok")
 
 async def keepalive_loop() -> None:
