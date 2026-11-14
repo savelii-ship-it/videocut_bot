@@ -390,6 +390,11 @@ async def main() -> None:
         before = len(mock.requests)
         ok = await cli.post("/tg/hooksecret", json=payload)
         assert ok.status == 200, ok.status
+        # обработка уходит в фоновую задачу — даём ей тик
+        for _ in range(50):
+            await asyncio.sleep(0.05)
+            if len(mock.requests) > before:
+                break
         new = sent_methods(mock)[before:]
         assert "SendMessage" in new, f"вебхук-апдейт не обработан: {new}"
     botmod.TG_SECRET = ""
