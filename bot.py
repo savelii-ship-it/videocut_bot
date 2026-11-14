@@ -590,16 +590,16 @@ SAVEAPI_MAX_MB = 1900  # не тянем рендишны больше ~2 ГБ
 
 
 def _pick_rendition(formats: list[dict]) -> dict | None:
-    """Лучший mp4-рендишн до 1080p в пределах лимита размера."""
+    """Лучший рендишн до 1080p в пределах лимита размера.
+    Схема saveapi: {"quality": "720p", "file_size": <байты>}."""
     def height(f: dict) -> int:
-        m = re.search(r"(\d{3,4})", str(f.get("label") or f.get("format") or ""))
+        m = re.search(r"(\d{3,4})", str(f.get("quality") or ""))
         return int(m.group(1)) if m else 0
 
     cands = [
         f for f in formats
-        if f.get("type") == "video"
-        and "mp4" in str(f.get("format", "")).lower()
-        and (f.get("size_mb") is None or f["size_mb"] <= SAVEAPI_MAX_MB)
+        if height(f)
+        and (f.get("file_size") is None or f["file_size"] <= SAVEAPI_MAX_MB * 1024 * 1024)
     ]
     if not cands:
         return None
@@ -621,9 +621,9 @@ async def download_via_saveapi(url: str, dest: Path) -> None:
             raise processing.ProcessingError(f"saveapi info: {code}")
         pick = _pick_rendition(info.get("formats") or [])
         if not pick:
-            raise processing.ProcessingError("saveapi: нет подходящего mp4-рендишна")
+            raise processing.ProcessingError("saveapi: нет подходящего рендишна")
         async with s.get(f"{SAVEAPI_BASE}/youtube/create",
-                         params={"url": url, "format": pick["format"]}) as r:
+                         params={"url": url, "quality": pick["quality"]}) as r:
             created = await r.json(content_type=None)
         if not created.get("success"):
             code = (created.get("error") or {}).get("code", "?")
@@ -645,7 +645,7 @@ async def download_via_saveapi(url: str, dest: Path) -> None:
     if not dest.exists() or dest.stat().st_size == 0:
         raise processing.ProcessingError("saveapi: файл пустой")
     log.info("saveapi: скачано %s (%s, %.1f МБ)",
-             pick.get("label") or pick.get("format"), url, dest.stat().st_size / 1048576)
+             pick.get("quality"), url, dest.stat().st_size / 1048576)
 
 
 @dp.message(StateFilter(None), F.text.regexp(URL_RE))

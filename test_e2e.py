@@ -410,15 +410,15 @@ async def main() -> None:
         if state["fail"]:
             return _web.json_response({"success": False, "error": {"code": "QUOTA_EXCEEDED"}})
         return _web.json_response({"success": True, "formats": [
-            {"format": "mp4_1080", "label": "1080p", "type": "video", "size_mb": 5000},
-            {"format": "mp4_720", "label": "720p", "type": "video", "size_mb": 40},
-            {"format": "mp4_360", "label": "360p", "type": "video", "size_mb": 20},
+            {"quality": "1080p", "file_size": 5 * 1024**3},
+            {"quality": "720p", "file_size": 40 * 1024**2},
+            {"quality": "360p", "file_size": 20 * 1024**2},
         ]})
 
     async def sa_create(request):
-        calls["create_format"] = request.query.get("format")
+        calls["create_format"] = request.query.get("quality")
         return _web.json_response({"success": True,
-                                   "medias": [{"url": f"http://{request.host}/file.mp4"}]})
+                                   "url": f"http://{request.host}/file.mp4"})
 
     async def sa_file(request):
         return _web.Response(body=b"\x00" * 1024)
@@ -433,7 +433,7 @@ async def main() -> None:
         dest = TMP / "saveapi_dl.mp4"
         await botmod.download_via_saveapi("https://youtu.be/xyz", dest)
         assert dest.stat().st_size == 1024
-        assert calls["create_format"] == "mp4_720", calls
+        assert calls["create_format"] == "720p", calls
         # ошибка API → ProcessingError
         state["fail"] = True
         try:
