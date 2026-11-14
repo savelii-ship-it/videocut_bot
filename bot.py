@@ -562,12 +562,90 @@ async def download_by_url(url: str, dest: Path, cookies: Path | None = None) -> 
         log.warning("yt-dlp попытка (client=%s) не удалась. POT: %s | хвост: %s",
                     client, " / ".join(pot_lines) or "—", text[-1000:])
 
+    # Фолбэк: YouTube режет датацентровые IP совсем — тянем через saveapi.org
+    if SAVEAPI_KEY and YOUTUBE_URL_RE.search(url):
+        try:
+            await download_via_saveapi(url, dest)
+            return
+        except processing.ProcessingError as e:
+            log.warning("saveapi не помог: %s", e)
+            outputs.append(f"saveapi: {e}")
+
     full = "\n".join(outputs)
     if "Sign in to confirm" in full:
         raise processing.ProcessingError(
             "YouTube просит подтверждение «не бот». Пришли свежие куки через /cookies — и скачаю."
         )
     raise processing.ProcessingError(f"не удалось скачать по ссылке: {outputs[-1][-500:]}")
+
+
+# ---------------------------------------------------------------------------
+# saveapi.org — внешний резолвер YouTube (фолбэк, когда свои IP заблокированы)
+# ---------------------------------------------------------------------------
+
+SAVEAPI_KEY = os.getenv("SAVEAPI_KEY", "")
+SAVEAPI_BASE = "https://api.saveapi.org/v1"
+YOUTUBE_URL_RE = re.compile(r"(youtube\.com/(?:watch|shorts)|youtu\.be/)")
+SAVEAPI_MAX_MB = 1900  # не тянем рендишны больше ~2 ГБ
+
+
+def _pick_rendition(formats: list[dict]) -> dict | None:
+    """Лучший mp4-рендишн до 1080p в пределах лимита размера."""
+    def height(f: dict) -> int:
+        m = re.search(r"(\d{3,4})", str(f.get("label") or f.get("format") or ""))
+        return int(m.group(1)) if m else 0
+
+    cands = [
+        f for f in formats
+        if f.get("type") == "video"
+        and "mp4" in str(f.get("format", "")).lower()
+        and (f.get("size_mb") is None or f["size_mb"] <= SAVEAPI_MAX_MB)
+    ]
+    if not cands:
+        return None
+    under = [f for f in cands if height(f) <= 1080]
+    pool = under or cands
+    return max(pool, key=height)
+
+
+async def download_via_saveapi(url: str, dest: Path) -> None:
+    """Качает YouTube через saveapi.org: их инфраструктура резолвит видео,
+    файл стримится через них (YouTube подписывает ссылки под чужой IP)."""
+    headers = {"Authorization": f"Bearer {SAVEAPI_KEY}"}
+    timeout = aiohttp.ClientTimeout(total=180)
+    async with aiohttp.ClientSession(headers=headers, timeout=timeout) as s:
+        async with s.get(f"{SAVEAPI_BASE}/youtube/info", params={"url": url}) as r:
+            info = await r.json(content_type=None)
+        if not info.get("success"):
+            code = (info.get("error") or {}).get("code", str(r.status))
+            raise processing.ProcessingError(f"saveapi info: {code}")
+        pick = _pick_rendition(info.get("formats") or [])
+        if not pick:
+            raise processing.ProcessingError("saveapi: нет подходящего mp4-рендишна")
+        async with s.get(f"{SAVEAPI_BASE}/youtube/create",
+                         params={"url": url, "format": pick["format"]}) as r:
+            created = await r.json(content_type=None)
+        if not created.get("success"):
+            code = (created.get("error") or {}).get("code", "?")
+            raise processing.ProcessingError(f"saveapi create: {code}")
+        dl = created.get("url")
+        if not dl:
+            for m in created.get("medias") or []:
+                if m.get("url"):
+                    dl = m["url"]
+                    break
+        if not dl:
+            raise processing.ProcessingError("saveapi: пустая ссылка на файл")
+        async with s.get(dl, timeout=aiohttp.ClientTimeout(total=1800)) as r:
+            if r.status != 200:
+                raise processing.ProcessingError(f"saveapi download: HTTP {r.status}")
+            with dest.open("wb") as f:
+                async for chunk in r.content.iter_chunked(1 << 20):
+                    f.write(chunk)
+    if not dest.exists() or dest.stat().st_size == 0:
+        raise processing.ProcessingError("saveapi: файл пустой")
+    log.info("saveapi: скачано %s (%s, %.1f МБ)",
+             pick.get("label") or pick.get("format"), url, dest.stat().st_size / 1048576)
 
 
 @dp.message(StateFilter(None), F.text.regexp(URL_RE))

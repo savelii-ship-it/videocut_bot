@@ -400,6 +400,51 @@ async def main() -> None:
     botmod.TG_SECRET = ""
     print("✅ webhook: апдейт через HTTP обработан, чужой секрет → 403")
 
+    # 16. saveapi-фолбэк: info → create → скачивание, выбор 720p вместо жирного 1080p
+    from aiohttp import web as _web
+    calls = {"create_format": None}
+
+    state = {"fail": False}
+
+    async def sa_info(request):
+        if state["fail"]:
+            return _web.json_response({"success": False, "error": {"code": "QUOTA_EXCEEDED"}})
+        return _web.json_response({"success": True, "formats": [
+            {"format": "mp4_1080", "label": "1080p", "type": "video", "size_mb": 5000},
+            {"format": "mp4_720", "label": "720p", "type": "video", "size_mb": 40},
+            {"format": "mp4_360", "label": "360p", "type": "video", "size_mb": 20},
+        ]})
+
+    async def sa_create(request):
+        calls["create_format"] = request.query.get("format")
+        return _web.json_response({"success": True,
+                                   "medias": [{"url": f"http://{request.host}/file.mp4"}]})
+
+    async def sa_file(request):
+        return _web.Response(body=b"\x00" * 1024)
+
+    sa_app = _web.Application()
+    sa_app.router.add_get("/youtube/info", sa_info)
+    sa_app.router.add_get("/youtube/create", sa_create)
+    sa_app.router.add_get("/file.mp4", sa_file)
+    async with TestClient(TestServer(sa_app)) as cli:
+        botmod.SAVEAPI_BASE = str(cli.make_url(""))
+        botmod.SAVEAPI_KEY = "sk_test"
+        dest = TMP / "saveapi_dl.mp4"
+        await botmod.download_via_saveapi("https://youtu.be/xyz", dest)
+        assert dest.stat().st_size == 1024
+        assert calls["create_format"] == "mp4_720", calls
+        # ошибка API → ProcessingError
+        state["fail"] = True
+        try:
+            await botmod.download_via_saveapi("https://youtu.be/xyz", dest)
+            assert False, "должен был упасть"
+        except botmod.processing.ProcessingError as e:
+            assert "QUOTA_EXCEEDED" in str(e)
+        botmod.SAVEAPI_KEY = ""
+        botmod.SAVEAPI_BASE = "https://api.saveapi.org/v1"
+    print("✅ saveapi: выбор рендишна, скачивание и обработка ошибок")
+
     print("\nE2E: ВСЕ СЦЕНАРИИ ПРОШЛИ ✅")
 
 
