@@ -38,6 +38,7 @@ from aiogram.types import (
     Message,
     ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
+    Update,
     WebAppInfo,
 )
 from dotenv import load_dotenv
@@ -816,8 +817,26 @@ async def _run_job(message: Message, state: FSMContext) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Точка входа: бот (polling) + HTTP-сервер мини-аппа в одном процессе
+# Точка входа: бот (webhook, если задан TG_SECRET — иначе polling) + HTTP-сервер
 # ---------------------------------------------------------------------------
+
+TG_SECRET = os.getenv("TG_SECRET", "")
+
+
+async def telegram_webhook(request: web.Request) -> web.Response:
+    """Приём апдейтов от Telegram в webhook-режиме.
+
+    Пока установлен вебхук, ЛЮБОЙ polling с этим токеном получает 409 —
+    это выключает все посторонние копии бота, где бы они ни были запущены."""
+    if not TG_SECRET or request.match_info["secret"] != TG_SECRET:
+        raise web.HTTPForbidden()
+    try:
+        data = await request.json()
+    except Exception:
+        raise web.HTTPBadRequest()
+    update = Update.model_validate(data, context={"bot": bot})
+    await dp.feed_update(bot, update)
+    return web.Response(text="ok")
 
 async def keepalive_loop() -> None:
     """Пингуем резервный инстанс раз в 4 мин — бесплатные хостинги не засыпают."""
@@ -835,14 +854,18 @@ async def keepalive_loop() -> None:
 
 
 async def main() -> None:
+    app = server.create_app()
+    webhook_mode = bool(TG_SECRET and WEBAPP_URL)
+    if TG_SECRET:
+        app.router.add_post("/tg/{secret}", telegram_webhook)
     runner = None
-    if WEBAPP_URL:
-        app = server.create_app()
+    if WEBAPP_URL or TG_SECRET:
         runner = web.AppRunner(app)
         await runner.setup()
         site = web.TCPSite(runner, "0.0.0.0", HTTP_PORT)
         await site.start()
-        log.info("Mini app server: http://0.0.0.0:%s (public: %s)", HTTP_PORT, WEBAPP_URL)
+        log.info("HTTP server: http://0.0.0.0:%s (public: %s, webhook=%s)",
+                 HTTP_PORT, WEBAPP_URL or "-", webhook_mode)
     else:
         log.warning("WEBAPP_URL не задан — мини-апп отключён, только ручной ввод.")
 
@@ -852,7 +875,12 @@ async def main() -> None:
         log.info("Keepalive пинги: %s", ", ".join(PING_URLS))
 
     try:
-        await dp.start_polling(bot, allowed_updates=["message", "callback_query"])
+        if webhook_mode:
+            # Апдейты приходят на /tg/<secret> — polling не нужен и вреден
+            log.info("Webhook-режим: жду апдейты от Telegram на /tg/***")
+            await asyncio.Event().wait()
+        else:
+            await dp.start_polling(bot, allowed_updates=["message", "callback_query"])
     finally:
         if keepalive:
             keepalive.cancel()

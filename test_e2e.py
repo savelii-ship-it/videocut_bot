@@ -374,6 +374,27 @@ async def main() -> None:
     del os.environ["INTERNAL_SECRET"]
     print("✅ /internal: push/delete между инстансами работают, без секрета 403")
 
+    # 15. Webhook-режим: апдейт через HTTP доходит до диспетчера, чужой секрет — 403
+    botmod.TG_SECRET = "hooksecret"
+    hook_app = botmod.server.create_app()
+    hook_app.router.add_post("/tg/{secret}", botmod.telegram_webhook)
+    async with TestClient(TestServer(hook_app)) as cli:
+        bad = await cli.post("/tg/wrong", json={"update_id": 41})
+        assert bad.status == 403, bad.status
+        payload = {"update_id": 42, "message": {
+            "message_id": 42, "from": {"id": CHAT, "is_bot": False, "first_name": "Tester"},
+            "chat": {"id": CHAT, "type": "private"}, "date": 1_800_000_000,
+            "text": "/start",
+            "entities": [{"type": "bot_command", "offset": 0, "length": 6}],
+        }}
+        before = len(mock.requests)
+        ok = await cli.post("/tg/hooksecret", json=payload)
+        assert ok.status == 200, ok.status
+        new = sent_methods(mock)[before:]
+        assert "SendMessage" in new, f"вебхук-апдейт не обработан: {new}"
+    botmod.TG_SECRET = ""
+    print("✅ webhook: апдейт через HTTP обработан, чужой секрет → 403")
+
     print("\nE2E: ВСЕ СЦЕНАРИИ ПРОШЛИ ✅")
 
 
