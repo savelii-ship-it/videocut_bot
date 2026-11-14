@@ -557,7 +557,9 @@ async def download_by_url(url: str, dest: Path, cookies: Path | None = None) -> 
             return
         outputs.append(text)
         dest.unlink(missing_ok=True)
-        log.warning("yt-dlp попытка (client=%s) не удалась: %s", client, text[-300:])
+        pot = "pot" if ("[pot" in text or "PO Token" in text) else "no-pot"
+        log.warning("yt-dlp попытка (client=%s, %s) не удалась: %s",
+                    client, pot, text[-600:])
 
     full = "\n".join(outputs)
     if "Sign in to confirm" in full:
@@ -853,6 +855,21 @@ async def keepalive_loop() -> None:
             await asyncio.sleep(240)
 
 
+async def pot_health() -> None:
+    """Ждём поднятия локального POT-провайдера и логируем итог."""
+    for _ in range(30):
+        try:
+            async with aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=5)
+            ) as s:
+                async with s.get("http://127.0.0.1:4416/ping") as r:
+                    log.info("POT-провайдер поднялся: HTTP %s", r.status)
+                    return
+        except Exception:
+            await asyncio.sleep(2)
+    log.warning("POT-провайдер НЕ отвечает на 127.0.0.1:4416 — YouTube будет резать")
+
+
 async def main() -> None:
     app = server.create_app()
     webhook_mode = bool(TG_SECRET and WEBAPP_URL)
@@ -873,6 +890,7 @@ async def main() -> None:
     if PING_URLS:
         keepalive = asyncio.create_task(keepalive_loop())
         log.info("Keepalive пинги: %s", ", ".join(PING_URLS))
+    asyncio.create_task(pot_health())
 
     try:
         if webhook_mode:
